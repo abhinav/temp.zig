@@ -1,4 +1,4 @@
-# 🗑️ temp.zig
+# 🗑️ temp.zig [![CI](https://github.com/abhinav/temp.zig/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinav/temp.zig/actions/workflows/ci.yml) [![codecov](https://codecov.io/github/abhinav/temp.zig/graph/badge.svg?token=9CB5MRYCH5)](https://codecov.io/github/abhinav/temp.zig)
 
 Cross-platform temporary files and directories in Zig.
 
