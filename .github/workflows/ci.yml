@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ['*']
+
+permissions:
+  contents: read
+
+jobs:
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.11.0  # most recent stable
+
+      - name: Check formatting
+        run: zig fmt --check .
+
+  test:
+    name: Test / Zig ${{ matrix.zig-version }} / ${{ matrix.os}}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow-fail }}
+    strategy:
+      matrix:
+        zig-version: ['0.11.0']
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        allow-fail: [false]
+        include:
+          - zig-version: master
+            os: ubuntu-latest
+            allow-fail: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kcov
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          URL=https://github.com/SimonKagstrom/kcov/releases/download/$KCOV_VERSION/kcov-amd64.tar.gz
+          curl -L "$URL" | sudo tar xvzf - -C /
+        env:
+          KCOV_VERSION: v42
+
+      - name: Set up Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig-version }}
+
+      - name: Run tests (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          zig build test -Dtest-cover
+      - name: Run tests (Windows)
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          zig build test
+
+      - name: Coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v3
