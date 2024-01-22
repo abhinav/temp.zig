@@ -63,10 +63,10 @@ const OSError = if (is_unix) error{} else error{Unexpected};
 
 const is_unix = blk: {
     const tag = builtin.os.tag;
-    if (tag.isDarwin() or tag.isSolarish() or tag.isBSD()) break :blk true;
+    if (tag.isDarwin() or tag.isBSD()) break :blk true;
 
     break :blk switch (tag) {
-        .aix, .hurd, .linux, .plan9 => true,
+        .aix, .hurd, .linux, .plan9, .solaris => true,
         else => false,
     };
 };
@@ -203,19 +203,26 @@ test "TempDir multiple threads" {
 
     const alloc = std.testing.allocator;
 
-    var parent = std.testing.tmpDir(.{ .iterate = true });
+    // HACK: Zig 0.11 support.
+    const zig_0_12 = @hasField(std.fs.Dir.OpenDirOptions, "iterate");
+    var parent = if (zig_0_12)
+        std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
+    else
+        std.testing.tmpIterableDir(.{}); // Zig 0.11
     defer parent.cleanup();
+    const parent_dir = if (zig_0_12) parent.dir else parent.iterable_dir.dir;
+    const parent_iterable_dir = if (zig_0_12) parent.dir else parent.iterable_dir;
 
     var workers: [NumWorkers]std.Thread = undefined;
     for (0..NumWorkers) |worker_idx| {
         // This will leak on error, but that's fine for a test.
-        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent.dir });
+        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent_dir });
     }
 
     for (0..NumWorkers) |i| workers[i].join();
 
     // Verify that everything was cleaned up after the workers exit.
-    var it = parent.dir.iterate();
+    var it = parent_iterable_dir.iterate();
     var failed = false;
     while (try it.next()) |ent| {
         std.log.err("unexpected child: {s}\n", .{ent.name});
@@ -365,19 +372,26 @@ test "TempFile multiple threads" {
 
     const alloc = std.testing.allocator;
 
-    var parent = std.testing.tmpDir(.{ .iterate = true });
+    // HACK: Zig 0.11 support.
+    const zig_0_12 = @hasField(std.fs.Dir.OpenDirOptions, "iterate");
+    var parent = if (zig_0_12)
+        std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
+    else
+        std.testing.tmpIterableDir(.{}); // Zig 0.11
     defer parent.cleanup();
+    const parent_dir = if (zig_0_12) parent.dir else parent.iterable_dir.dir;
+    const parent_iterable_dir = if (zig_0_12) parent.dir else parent.iterable_dir;
 
     var workers: [NumWorkers]std.Thread = undefined;
     for (0..NumWorkers) |worker_idx| {
         // This will leak on error, but that's fine for a test.
-        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent.dir });
+        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent_dir });
     }
 
     for (0..NumWorkers) |i| workers[i].join();
 
     // Verify that everything was cleaned up after the workers exit.
-    var it = parent.dir.iterate();
+    var it = parent_iterable_dir.iterate();
     var failed = false;
     while (try it.next()) |ent| {
         std.log.err("unexpected child: {s}\n", .{ent.name});
