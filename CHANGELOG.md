@@ -5,7 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.2.0 - 2024-01-26
+
+This release contains a few breaking changes.
+Primary among these is how to get a handle to the temporary file or directory.
+
+Instead of `TempDir.dir` or `TempFile.file`, which held an open handle,
+you must now call `TempDir.open` or `TempFile.open`.
+Remember to close the returned handle separately from the `Temp{Dir, File}`.
+
+```diff
+-var dir = temp_dir.dir
++var dir = try temp_dir.open(.{});
++defer dir.close();
+```
+
+To prevent mixing up with with `std.fs.{Dir, File}.close()`,
+the `Temp{Dir, File}` objects are now freed by the `deinit` method.
+
+```diff
+ var temp_dir = try TempDir.create(..);
+-defer temp_dir.close();
++defer temp_dir.deinit();
+```
+
 ### Added
 - `TempDir`, `TempFile`: Add `open` methods to get an `std.fs.Dir` or
   `std.fs.File` for the temporary artifact.
@@ -19,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TempDir`: Drop `dir` field. The `open` method should be used instead.
 - `TempFile`: Drop `file` field. The `open` method should be used instead.
 
-## 0.1.0
+## 0.1.0 - 2024-01-21
 
 This is the first release of this library.
 

@@ -26,7 +26,7 @@ into your build.zig.zon.
 (This requires at least Zig 0.11.)
 
 ```bash
-zig fetch --save "https://github.com/abhinav/temp.zig/archive/0.1.0.tar.gz"
+zig fetch --save "https://github.com/abhinav/temp.zig/archive/0.2.0.tar.gz"
 ```
 
 Then, import the dependency in your build.zig:
