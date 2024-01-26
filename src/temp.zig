@@ -4,20 +4,36 @@
 //!
 //! Use `TempDir.create` to create a new temporary directory,
 //! or `TempFile.create` to create a new temporary file.
-//! Both functions return a handle to the temporary resource.
-//! Call the appropriate 'close' method to free up resources.
+//! Both functions return a handle to the temporary artifact.
+//! You must call the 'deinit' method to release resources
+//! and delete the temporary artifact.
 //!
 //! ```
-//! const dir = try TempDir.create(allocator, {});
-//! defer dir.close();
+//! var tmp_dir = try TempDir.create(allocator, {});
+//! defer tmp_dir.deinit();
 //! ```
 //!
 //! Use the `pattern` option to change the name of the temporary resource.
 //!
 //! ```
-//! const dir = try TempFile.create(allocator, .{
+//! var tmp_file = try TempFile.create(allocator, .{
 //!    .pattern = "foo-*.txt",
 //! });
+//! defer tmp_file.deinit();
+//! ```
+//!
+//! See `TempDir.CreateOptions` and `TempFile.CreateOptions`
+//! for a full list of options.
+//!
+//! Use the `open` method to open the temporary artifact.
+//! Be sure to close the handle when you're done with it.
+//!
+//! ```
+//! var dir = try tmp_dir.open(.{});
+//! defer dir.close();
+//!
+//! const file = try tmp_file.open(.{ .mode = .read_write });
+//! defer file.close();
 //! ```
 //!
 //! # Global temporary directory
@@ -71,14 +87,10 @@ const is_unix = blk: {
     };
 };
 
-/// TempDir is a temporary directory that is deleted when the handle is closed.
+/// TempDir is a temporary directory that is deleted when deinit is called.
 /// Construct one with `TempDir.create`.
 pub const TempDir = struct {
     allocator: Allocator,
-
-    /// Handle to the open directory.
-    /// Use this to perform operations on the directory.
-    dir: std.fs.Dir,
 
     /// Parent directory of the temporary directory.
     parent_dir: std.fs.Dir,
@@ -116,7 +128,7 @@ pub const TempDir = struct {
     /// Use `opts.parent` to change the parent directory.
     /// If omitted, the system-level global temporary directory is used.
     ///
-    /// Caller must call TempDir.close() to avoid leaking resources.
+    /// Caller must call TempDir.deinit() to avoid leaking resources.
     ///
     /// Returns error.PathAlreadyExists if a unique name could not be found
     /// after several attempts.
@@ -139,11 +151,7 @@ pub const TempDir = struct {
                 return err;
             };
 
-            var dir = try parent_dir.openDir(basename, .{});
-            errdefer dir.close();
-
             return TempDir{
-                .dir = dir,
                 .retain = opts.retain,
                 .allocator = alloc,
                 .basename = try alloc.dupe(u8, basename),
@@ -155,10 +163,15 @@ pub const TempDir = struct {
         return error.PathAlreadyExists;
     }
 
+    /// Returns a handle to the temporary directory.
+    /// The handle is a system resource and must be closed by the caller.
+    pub fn open(self: *const TempDir, opts: std.fs.Dir.OpenDirOptions) std.fs.Dir.OpenError!std.fs.Dir {
+        return self.parent_dir.openDir(self.basename, opts);
+    }
+
     /// Frees up resources held by the TempDir.
     /// Deletes the temporary directory unless `retain` is true.
-    pub fn close(self: *TempDir) void {
-        self.dir.close();
+    pub fn deinit(self: *TempDir) void {
         if (!self.retain) {
             self.parent_dir.deleteTree(self.basename) catch {};
         }
@@ -175,9 +188,12 @@ test TempDir {
     var tmp_dir = try TempDir.create(alloc, .{
         .pattern = "test-data-*",
     });
-    defer tmp_dir.close();
+    defer tmp_dir.deinit();
 
-    const f = try tmp_dir.dir.createFile("foo.txt", .{});
+    var dir = try tmp_dir.open(.{});
+    defer dir.close();
+
+    const f = try dir.createFile("foo.txt", .{});
     f.close();
 }
 
@@ -196,7 +212,7 @@ test "TempDir multiple threads" {
                     .parent = parent,
                     .pattern = "foo*",
                 });
-                tmp_dir.close();
+                tmp_dir.deinit();
             }
         }
     };
@@ -236,10 +252,6 @@ test "TempDir multiple threads" {
 pub const TempFile = struct {
     allocator: Allocator,
 
-    /// Handle to the open file.
-    /// Use this to read or write to the file.
-    file: std.fs.File,
-
     /// Parent directory of the temporary file.
     parent_dir: std.fs.Dir,
     should_close_parent: bool,
@@ -276,7 +288,7 @@ pub const TempFile = struct {
     /// Use `opts.parent` to change the parent directory.
     /// If omitted, the system-level global temporary directory is used.
     ///
-    /// Caller must call TempFile.close() to avoid leaking resources.
+    /// Caller must call TempFile.deinit() to avoid leaking resources.
     ///
     /// Returns error.PathAlreadyExists if a unique name could not be found
     /// after several attempts.
@@ -292,7 +304,6 @@ pub const TempFile = struct {
 
         while (try it.next()) |basename| {
             const file = parent_dir.createFile(basename, .{
-                .read = true,
                 .exclusive = true,
             }) catch |err| {
                 if (err == error.PathAlreadyExists) {
@@ -301,10 +312,9 @@ pub const TempFile = struct {
                 }
                 return err;
             };
-            errdefer file.close();
+            file.close();
 
             return TempFile{
-                .file = file,
                 .retain = opts.retain,
                 .allocator = alloc,
                 .basename = try alloc.dupe(u8, basename),
@@ -316,10 +326,15 @@ pub const TempFile = struct {
         return error.PathAlreadyExists;
     }
 
+    /// Returns a handle to the temporary file.
+    /// The handle is a system resource and must be closed by the caller.
+    pub fn open(self: *const TempFile, opts: std.fs.File.OpenFlags) std.fs.File.OpenError!std.fs.File {
+        return self.parent_dir.openFile(self.basename, opts);
+    }
+
     /// Frees up resources held by the TempFile.
     /// Deletes the temporary file unless `retain` is true.
-    pub fn close(self: *TempFile) void {
-        self.file.close();
+    pub fn deinit(self: *TempFile) void {
         if (!self.retain) {
             self.parent_dir.deleteFile(self.basename) catch {};
         }
@@ -336,13 +351,13 @@ test TempFile {
     var tmp_file = try TempFile.create(alloc, .{
         .pattern = "data*.txt",
     });
-    defer tmp_file.close();
+    defer tmp_file.deinit();
 
-    // We can write to the temporary file as usual.
-    const f = tmp_file.file;
+    const f = try tmp_file.open(.{ .mode = .read_write });
+    defer f.close();
+
     try f.writeAll("hello\nworld\n");
 
-    // The temporary file also has read access.
     try f.seekTo(0);
     const got = try f.readToEndAlloc(alloc, 42);
     defer alloc.free(got);
@@ -365,7 +380,7 @@ test "TempFile multiple threads" {
                     .parent = parent,
                     .pattern = "foo*.txt",
                 });
-                tmp_file.close();
+                tmp_file.deinit();
             }
         }
     };
@@ -398,6 +413,26 @@ test "TempFile multiple threads" {
         failed = true;
     }
     try std.testing.expect(!failed); // saw unexpected files
+}
+
+test "TempFile close without deleting" {
+    const alloc = std.testing.allocator;
+
+    var tmp_dir = try TempDir.create(alloc, .{});
+    defer tmp_dir.deinit();
+
+    var parent = try tmp_dir.open(.{});
+    defer parent.close();
+
+    var tmp_file = try TempFile.create(alloc, .{ .parent = parent });
+    defer tmp_file.deinit();
+
+    const f = try tmp_file.open(.{ .mode = .read_write });
+    errdefer f.close();
+    try f.writeAll("hello\n");
+    f.close();
+
+    _ = try parent.statFile(tmp_file.basename); // file should exist
 }
 
 /// Generates random names matching a pattern until a limit is reached.
