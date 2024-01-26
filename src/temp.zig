@@ -73,6 +73,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const temp = @This();
 
 // OS-specific errors.
 const OSError = if (is_unix) error{} else error{Unexpected};
@@ -188,6 +189,30 @@ test TempDir {
     var tmp_dir = try TempDir.create(alloc, .{
         .pattern = "test-data-*",
     });
+    defer tmp_dir.deinit();
+
+    var dir = try tmp_dir.open(.{});
+    defer dir.close();
+
+    const f = try dir.createFile("foo.txt", .{});
+    f.close();
+}
+
+/// Create a new temporary directory in the system's global temporary directory.
+/// The directory is deleted when the returned handle is closed.
+///
+/// `pattern` specifies a naming pattern for the file.
+/// The last `*` in the pattern is replaced with a random string.
+///
+/// For additional options, use `TempDir.create`.
+pub fn create_dir(alloc: Allocator, pattern: []const u8) !TempDir {
+    return try TempDir.create(alloc, .{ .pattern = pattern });
+}
+
+test create_dir {
+    const alloc = std.testing.allocator;
+
+    var tmp_dir = try temp.create_dir(alloc, "test-data-*");
     defer tmp_dir.deinit();
 
     var dir = try tmp_dir.open(.{});
@@ -363,6 +388,28 @@ test TempFile {
     defer alloc.free(got);
 
     try std.testing.expectEqualStrings("hello\nworld\n", got);
+}
+
+/// Create a new temporary file in the system's global temporary directory.
+/// The file is deleted when the returned handle is closed.
+///
+/// `pattern` specifies a naming pattern for the file.
+/// The last `*` in the pattern is replaced with a random string.
+///
+/// For additional options, use `TempFile.create`.
+pub fn create_file(alloc: Allocator, pattern: []const u8) !TempFile {
+    return try TempFile.create(alloc, .{ .pattern = pattern });
+}
+
+test create_file {
+    const alloc = std.testing.allocator;
+
+    var tmp_file = try temp.create_file(alloc, "data*.txt");
+    defer tmp_file.deinit();
+
+    const f = try tmp_file.open(.{ .mode = .read_write });
+    try f.writeAll("hello\nworld\n");
+    f.close();
 }
 
 test "TempFile multiple threads" {

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `TempDir`, `TempFile`: Add `open` methods to get an `std.fs.Dir` or
   `std.fs.File` for the temporary artifact.
+- Add `create_file` and `create_dir` convenience functions
+  for when `TempFile.create` and `TempDir.create` aren't necessary.
 
 ### Changed
 - `TempDir`, `TempFile`: Replace `close` with `deinit`.
