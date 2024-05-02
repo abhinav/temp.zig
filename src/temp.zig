@@ -120,8 +120,12 @@ pub const TempDir = struct {
         retain: bool = false,
     };
 
-    pub const CreateError = error{PathAlreadyExists} ||
-        Allocator.Error || std.fs.File.OpenError || std.os.MakeDirError || OSError;
+    pub const CreateError = error{
+        /// A unique name could not be found after many attempts.
+        /// This is a rare error that can occur if the system is under heavy load.
+        /// Consider using a different pattern, or use a different parent directory.
+        PathAlreadyExists,
+    } || Allocator.Error || std.fs.File.OpenError || std.posix.MakeDirError || OSError;
 
     /// Creates a unique new directory,
     /// guaranteeing that the directory did not exist before the call.
@@ -131,8 +135,8 @@ pub const TempDir = struct {
     ///
     /// Caller must call TempDir.deinit() to avoid leaking resources.
     ///
-    /// Returns error.PathAlreadyExists if a unique name could not be found
-    /// after several attempts.
+    /// Returns `CreateError.PathAlreadyExists` if a unique name could not be
+    /// found after several attempts.
     pub fn create(alloc: Allocator, opts: CreateOptions) CreateError!TempDir {
         assert(std.mem.indexOf(u8, opts.pattern, std.fs.path.sep_str) == null); // must not contain path separator
 
@@ -639,7 +643,7 @@ pub fn system_dir_path(buf: []u8) SystemDirPathError!usize {
 }
 
 fn system_dir_path_unix(buf: []u8) error{NameTooLong}!usize {
-    const dir = std.os.getenv("TMPDIR") orelse "/tmp";
+    const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
     const dir_len = dir.len;
     if (dir_len > buf.len) {
         return error.NameTooLong;
@@ -672,7 +676,7 @@ pub fn system_dir_path_alloc(alloc: Allocator) SystemDirPathAllocError![]const u
 }
 
 fn system_dir_path_alloc_unix(alloc: Allocator) ![]const u8 {
-    const dir = std.os.getenv("TMPDIR") orelse "/tmp";
+    const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
     return alloc.dupe(u8, dir);
 }
 

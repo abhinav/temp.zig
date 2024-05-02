@@ -11,16 +11,9 @@ pub fn build(b: *std.Build) void {
         "Output directory for coverage data",
     ) orelse b.pathFromRoot("cover");
 
-    _ = if (@hasDecl(std.Build, "CreateModuleOptions"))
-        // Zig 0.11
-        b.addModule("temp", .{
-            .source_file = .{ .path = "src/temp.zig" },
-        })
-    else
-        // Zig 0.12
-        b.addModule("temp", .{
-            .root_source_file = .{ .path = "src/temp.zig" },
-        });
+    _ = b.addModule("temp", .{
+        .root_source_file = .{ .path = "src/temp.zig" },
+    });
 
     const lib = b.addStaticLibrary(.{
         .name = "temp",
@@ -37,15 +30,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
-    const RunStep = if (@hasDecl(std, "build") and @hasDecl(std.build, "RunStep"))
-        std.build.RunStep // Zig 0.11
-    else
-        std.Build.Step.Run // Zig 0.12
-        ;
-
     if (cover) {
         run_unit_tests.has_side_effects = true;
-        run_unit_tests.argv.insertSlice(0, &[_]RunStep.Arg{
+        run_unit_tests.argv.insertSlice(0, &[_]std.Build.Step.Run.Arg{
             .{ .bytes = b.dupe("kcov") },
             .{ .bytes = b.fmt("--include-path={s}", .{b.pathFromRoot("src")}) },
             .{ .bytes = b.fmt("--strip-path={s}", .{b.pathFromRoot(".")}) },
