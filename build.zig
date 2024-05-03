@@ -11,20 +11,20 @@ pub fn build(b: *std.Build) void {
         "Output directory for coverage data",
     ) orelse b.pathFromRoot("cover");
 
-    _ = b.addModule("temp", .{
+    const temp = b.addModule("temp", .{
         .root_source_file = .{ .path = "src/temp.zig" },
     });
 
     const lib = b.addStaticLibrary(.{
         .name = "temp",
-        .root_source_file = .{ .path = "src/temp.zig" },
+        .root_source_file = temp.root_source_file orelse unreachable,
         .target = target,
         .optimize = optimize,
     });
     b.installArtifact(lib);
 
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/temp.zig" },
+        .root_source_file = temp.root_source_file orelse unreachable,
         .target = target,
         .optimize = optimize,
     });
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
 
     const docs_step = b.step("docs", "Generate docs.");
     const install_docs = b.addInstallDirectory(.{
-        .source_dir = unit_tests.getEmittedDocs(),
+        .source_dir = lib.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
