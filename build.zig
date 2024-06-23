@@ -43,8 +43,8 @@ pub fn build(b: *std.Build) void {
 
         test_step.dependOn(&run_coverage.step);
     } else {
-        const run_uint_tests = b.addRunArtifact(unit_tests);
-        test_step.dependOn(&run_uint_tests.step);
+        const run_unit_tests = b.addRunArtifact(unit_tests);
+        test_step.dependOn(&run_unit_tests.step);
     }
 
     const docs_step = b.step("docs", "Generate docs.");
