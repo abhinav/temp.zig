@@ -18,7 +18,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: goto-bus-stop/setup-zig@v2
+      - uses: mlugg/setup-zig@v1
         with:
           version: 0.13.0  # most recent stable
 
@@ -52,7 +52,7 @@ jobs:
           KCOV_VERSION: v42
 
       - name: Set up Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v1
         with:
           version: ${{ matrix.zig-version }}
 
