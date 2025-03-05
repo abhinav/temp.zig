@@ -611,7 +611,7 @@ pub const SystemDirError = std.fs.File.OpenError || OSError;
 /// The returned handle is a system resource and must be closed
 /// to avoid leaking resources.
 pub fn system_dir() SystemDirError!std.fs.Dir {
-    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = system_dir_path(buf[0..]) catch |err| switch (err) {
         error.NameTooLong => unreachable, // violates MAX_PATH_BYTES
         else => return err,
