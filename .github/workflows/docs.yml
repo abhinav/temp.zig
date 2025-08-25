@@ -19,14 +19,14 @@ jobs:
     name: Build website
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - uses: goto-bus-stop/setup-zig@v2
       with:
         version: master
     - name: Build
       run: zig build docs
     - name: Upload
-      uses: actions/upload-pages-artifact@v3
+      uses: actions/upload-pages-artifact@v4
       with:
         path: "zig-out/docs/"
 
