@@ -75,8 +75,8 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const temp = @This();
 
-const ArrayList = std.ArrayList;
-const OpenDirOptions = if (@hasDecl(std.fs.Dir, "OpenDirOptions")) std.fs.Dir.OpenDirOptions else std.fs.Dir.OpenOptions;
+const ArrayList = if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 15) std.ArrayList else std.ArrayListUnmanaged;
+const OpenDirOptions = if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 15) std.fs.Dir.OpenOptions else std.fs.Dir.OpenDirOptions;
 
 // OS-specific errors.
 const OSError = if (is_unix) error{} else error{Unexpected};
