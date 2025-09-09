@@ -75,6 +75,9 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const temp = @This();
 
+const ArrayList = std.ArrayList;
+const OpenDirOptions = if (@hasDecl(std.fs.Dir, "OpenDirOptions")) std.fs.Dir.OpenDirOptions else std.fs.Dir.OpenOptions;
+
 // OS-specific errors.
 const OSError = if (is_unix) error{} else error{Unexpected};
 
@@ -170,7 +173,7 @@ pub const TempDir = struct {
 
     /// Returns a handle to the temporary directory.
     /// The handle is a system resource and must be closed by the caller.
-    pub fn open(self: *const TempDir, opts: std.fs.Dir.OpenDirOptions) std.fs.Dir.OpenError!std.fs.Dir {
+    pub fn open(self: *const TempDir, opts: OpenDirOptions) std.fs.Dir.OpenError!std.fs.Dir {
         return self.parent_dir.openDir(self.basename, opts);
     }
 
@@ -249,7 +252,7 @@ test "TempDir multiple threads" {
     const alloc = std.testing.allocator;
 
     // HACK: Zig 0.11 support.
-    const zig_0_12 = @hasField(std.fs.Dir.OpenDirOptions, "iterate");
+    const zig_0_12 = @hasField(OpenDirOptions, "iterate");
     var parent = if (zig_0_12)
         std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
     else
@@ -439,7 +442,7 @@ test "TempFile multiple threads" {
     const alloc = std.testing.allocator;
 
     // HACK: Zig 0.11 support.
-    const zig_0_12 = @hasField(std.fs.Dir.OpenDirOptions, "iterate");
+    const zig_0_12 = @hasField(OpenDirOptions, "iterate");
     var parent = if (zig_0_12)
         std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
     else
@@ -501,7 +504,7 @@ const NameGenerator = struct {
     suffix: []const u8,
 
     /// Buffer for the generated name. Reused across calls to `next`.
-    basename: std.ArrayList(u8),
+    basename: ArrayList(u8),
 
     attempt: usize,
     limit: usize,
@@ -519,7 +522,7 @@ const NameGenerator = struct {
             suffix = "";
         }
 
-        const basename = try std.ArrayList(u8).initCapacity(alloc, prefix.len + suffix.len + random_basename_len);
+        const basename = try ArrayList(u8).initCapacity(alloc, prefix.len + suffix.len + random_basename_len);
         return NameGenerator{
             .allocator = alloc,
             .prefix = prefix,
@@ -531,7 +534,7 @@ const NameGenerator = struct {
     }
 
     fn deinit(self: *NameGenerator) void {
-        self.basename.deinit();
+        self.basename.deinit(self.allocator);
     }
 
     /// Returns the next random basename matching the pattern.
@@ -550,9 +553,9 @@ const NameGenerator = struct {
         const rand_part = std.fs.base64_encoder.encode(&rand_buffer, random_bytes[0..]);
 
         self.basename.clearRetainingCapacity();
-        try self.basename.appendSlice(self.prefix);
-        try self.basename.appendSlice(rand_part);
-        try self.basename.appendSlice(self.suffix);
+        try self.basename.appendSlice(self.allocator, self.prefix);
+        try self.basename.appendSlice(self.allocator, rand_part);
+        try self.basename.appendSlice(self.allocator, self.suffix);
 
         return self.basename.items;
     }
@@ -797,7 +800,7 @@ const utf16le = struct {
     ///
     /// Assumes valid UTF-16LE, crashing if it encounters invalid unicode.
     fn to_utf8_alloc(alloc: Allocator, utf16le_slice: []const u16) ![]const u8 {
-        var result = try std.ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
+        var result = try ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
         errdefer result.deinit();
 
         var end_index: usize = 0;
