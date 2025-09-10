@@ -705,7 +705,6 @@ test system_dir_path_alloc {
 
 /// Namespace for Windows-specific functionality.
 const windows = struct {
-    const WINAPI = std.os.windows.WINAPI;
     const kernel32 = std.os.windows.kernel32;
     const DWORD = std.os.windows.DWORD;
 
@@ -749,7 +748,7 @@ const windows = struct {
     extern "kernel32" fn GetTempPathW(
         nBufferLength: DWORD,
         lpBuffer: [*]u16,
-    ) callconv(WINAPI) DWORD;
+    ) callconv(.winapi) DWORD;
 
     test get_temp_path {
         if (builtin.os.tag != .windows) return;
