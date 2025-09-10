@@ -380,18 +380,25 @@ pub const TempFile = struct {
 test TempFile {
     const alloc = std.testing.allocator;
 
-    var tmp_file = try TempFile.create(alloc, .{
+    var tmp_file: TempFile = try TempFile.create(alloc, .{
         .pattern = "data*.txt",
     });
     defer tmp_file.deinit();
 
-    const f = try tmp_file.open(.{ .mode = .read_write });
+    var buf: [1024]u8 = undefined;
+
+    var f: std.fs.File = try tmp_file.open(.{ .mode = .read_write });
     defer f.close();
 
-    try f.writeAll("hello\nworld\n");
+    var writer = f.writer(&buf);
+    var w = &writer.interface;
+    try w.writeAll("hello\nworld\n");
+    try w.flush();
 
-    try f.seekTo(0);
-    const got = try f.readToEndAlloc(alloc, 42);
+    var reader = f.reader(&buf);
+    var r = &reader.interface;
+
+    const got = try r.allocRemaining(alloc, .unlimited);
     defer alloc.free(got);
 
     try std.testing.expectEqualStrings("hello\nworld\n", got);
