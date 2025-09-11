@@ -13,20 +13,19 @@ pub fn build(b: *std.Build) void {
 
     const temp = b.addModule("temp", .{
         .root_source_file = b.path("src/temp.zig"),
-    });
-
-    const lib = b.addStaticLibrary(.{
-        .name = "temp",
-        .root_source_file = temp.root_source_file.?,
         .target = target,
         .optimize = optimize,
+    });
+
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "temp",
+        .root_module = temp,
     });
     b.installArtifact(lib);
 
     const unit_tests = b.addTest(.{
-        .root_source_file = temp.root_source_file.?,
-        .target = target,
-        .optimize = optimize,
+        .root_module = temp,
     });
 
     const test_step = b.step("test", "Run unit tests");

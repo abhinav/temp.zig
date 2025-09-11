@@ -75,6 +75,9 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const temp = @This();
 
+const ArrayList = if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 15) std.ArrayList else std.ArrayListUnmanaged;
+const OpenDirOptions = if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 15) std.fs.Dir.OpenOptions else std.fs.Dir.OpenDirOptions;
+
 // OS-specific errors.
 const OSError = if (is_unix) error{} else error{Unexpected};
 
@@ -170,7 +173,7 @@ pub const TempDir = struct {
 
     /// Returns a handle to the temporary directory.
     /// The handle is a system resource and must be closed by the caller.
-    pub fn open(self: *const TempDir, opts: std.fs.Dir.OpenDirOptions) std.fs.Dir.OpenError!std.fs.Dir {
+    pub fn open(self: *const TempDir, opts: OpenDirOptions) std.fs.Dir.OpenError!std.fs.Dir {
         return self.parent_dir.openDir(self.basename, opts);
     }
 
@@ -249,7 +252,7 @@ test "TempDir multiple threads" {
     const alloc = std.testing.allocator;
 
     // HACK: Zig 0.11 support.
-    const zig_0_12 = @hasField(std.fs.Dir.OpenDirOptions, "iterate");
+    const zig_0_12 = @hasField(OpenDirOptions, "iterate");
     var parent = if (zig_0_12)
         std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
     else
@@ -377,18 +380,25 @@ pub const TempFile = struct {
 test TempFile {
     const alloc = std.testing.allocator;
 
-    var tmp_file = try TempFile.create(alloc, .{
+    var tmp_file: TempFile = try TempFile.create(alloc, .{
         .pattern = "data*.txt",
     });
     defer tmp_file.deinit();
 
-    const f = try tmp_file.open(.{ .mode = .read_write });
+    var buf: [1024]u8 = undefined;
+
+    var f: std.fs.File = try tmp_file.open(.{ .mode = .read_write });
     defer f.close();
 
-    try f.writeAll("hello\nworld\n");
+    var writer = f.writer(&buf);
+    var w = &writer.interface;
+    try w.writeAll("hello\nworld\n");
+    try w.flush();
 
-    try f.seekTo(0);
-    const got = try f.readToEndAlloc(alloc, 42);
+    var reader = f.reader(&buf);
+    var r = &reader.interface;
+
+    const got = try r.allocRemaining(alloc, .unlimited);
     defer alloc.free(got);
 
     try std.testing.expectEqualStrings("hello\nworld\n", got);
@@ -439,7 +449,7 @@ test "TempFile multiple threads" {
     const alloc = std.testing.allocator;
 
     // HACK: Zig 0.11 support.
-    const zig_0_12 = @hasField(std.fs.Dir.OpenDirOptions, "iterate");
+    const zig_0_12 = @hasField(OpenDirOptions, "iterate");
     var parent = if (zig_0_12)
         std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
     else
@@ -501,7 +511,7 @@ const NameGenerator = struct {
     suffix: []const u8,
 
     /// Buffer for the generated name. Reused across calls to `next`.
-    basename: std.ArrayList(u8),
+    basename: ArrayList(u8),
 
     attempt: usize,
     limit: usize,
@@ -519,7 +529,7 @@ const NameGenerator = struct {
             suffix = "";
         }
 
-        const basename = try std.ArrayList(u8).initCapacity(alloc, prefix.len + suffix.len + random_basename_len);
+        const basename = try ArrayList(u8).initCapacity(alloc, prefix.len + suffix.len + random_basename_len);
         return NameGenerator{
             .allocator = alloc,
             .prefix = prefix,
@@ -531,7 +541,7 @@ const NameGenerator = struct {
     }
 
     fn deinit(self: *NameGenerator) void {
-        self.basename.deinit();
+        self.basename.deinit(self.allocator);
     }
 
     /// Returns the next random basename matching the pattern.
@@ -550,9 +560,9 @@ const NameGenerator = struct {
         const rand_part = std.fs.base64_encoder.encode(&rand_buffer, random_bytes[0..]);
 
         self.basename.clearRetainingCapacity();
-        try self.basename.appendSlice(self.prefix);
-        try self.basename.appendSlice(rand_part);
-        try self.basename.appendSlice(self.suffix);
+        try self.basename.appendSlice(self.allocator, self.prefix);
+        try self.basename.appendSlice(self.allocator, rand_part);
+        try self.basename.appendSlice(self.allocator, self.suffix);
 
         return self.basename.items;
     }
@@ -695,7 +705,6 @@ test system_dir_path_alloc {
 
 /// Namespace for Windows-specific functionality.
 const windows = struct {
-    const WINAPI = std.os.windows.WINAPI;
     const kernel32 = std.os.windows.kernel32;
     const DWORD = std.os.windows.DWORD;
 
@@ -739,7 +748,7 @@ const windows = struct {
     extern "kernel32" fn GetTempPathW(
         nBufferLength: DWORD,
         lpBuffer: [*]u16,
-    ) callconv(WINAPI) DWORD;
+    ) callconv(.winapi) DWORD;
 
     test get_temp_path {
         if (builtin.os.tag != .windows) return;
@@ -797,18 +806,18 @@ const utf16le = struct {
     ///
     /// Assumes valid UTF-16LE, crashing if it encounters invalid unicode.
     fn to_utf8_alloc(alloc: Allocator, utf16le_slice: []const u16) ![]const u8 {
-        var result = try std.ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
-        errdefer result.deinit();
+        var result = try ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
+        errdefer result.deinit(alloc);
 
         var end_index: usize = 0;
         var it = std.unicode.Utf16LeIterator.init(utf16le_slice);
         while (it.nextCodepoint() catch unreachable) |codepoint| {
             const seq_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
-            try result.resize(result.items.len + seq_len);
+            try result.resize(alloc, result.items.len + seq_len);
             end_index += std.unicode.utf8Encode(codepoint, result.items[end_index..]) catch unreachable;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(alloc);
     }
 };
 
