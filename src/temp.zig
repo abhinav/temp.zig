@@ -813,7 +813,7 @@ const utf16le = struct {
         var it = std.unicode.Utf16LeIterator.init(utf16le_slice);
         while (it.nextCodepoint() catch unreachable) |codepoint| {
             const seq_len = std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
-            try result.resize(result.items.len + seq_len);
+            try result.resize(alloc, result.items.len + seq_len);
             end_index += std.unicode.utf8Encode(codepoint, result.items[end_index..]) catch unreachable;
         }
 
