@@ -807,7 +807,7 @@ const utf16le = struct {
     /// Assumes valid UTF-16LE, crashing if it encounters invalid unicode.
     fn to_utf8_alloc(alloc: Allocator, utf16le_slice: []const u16) ![]const u8 {
         var result = try ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
-        errdefer result.deinit();
+        errdefer result.deinit(alloc);
 
         var end_index: usize = 0;
         var it = std.unicode.Utf16LeIterator.init(utf16le_slice);
@@ -817,7 +817,7 @@ const utf16le = struct {
             end_index += std.unicode.utf8Encode(codepoint, result.items[end_index..]) catch unreachable;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(alloc);
     }
 };
 
