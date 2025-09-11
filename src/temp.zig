@@ -75,9 +75,6 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const temp = @This();
 
-const ArrayList = if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 15) std.ArrayList else std.ArrayListUnmanaged;
-const OpenDirOptions = if (builtin.zig_version.major == 0 and builtin.zig_version.minor >= 15) std.fs.Dir.OpenOptions else std.fs.Dir.OpenDirOptions;
-
 // OS-specific errors.
 const OSError = if (is_unix) error{} else error{Unexpected};
 
@@ -173,7 +170,7 @@ pub const TempDir = struct {
 
     /// Returns a handle to the temporary directory.
     /// The handle is a system resource and must be closed by the caller.
-    pub fn open(self: *const TempDir, opts: OpenDirOptions) std.fs.Dir.OpenError!std.fs.Dir {
+    pub fn open(self: *const TempDir, opts: std.fs.Dir.OpenOptions) std.fs.Dir.OpenError!std.fs.Dir {
         return self.parent_dir.openDir(self.basename, opts);
     }
 
@@ -251,26 +248,19 @@ test "TempDir multiple threads" {
 
     const alloc = std.testing.allocator;
 
-    // HACK: Zig 0.11 support.
-    const zig_0_12 = @hasField(OpenDirOptions, "iterate");
-    var parent = if (zig_0_12)
-        std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
-    else
-        std.testing.tmpIterableDir(.{}); // Zig 0.11
+    var parent = std.testing.tmpDir(.{ .iterate = true });
     defer parent.cleanup();
-    const parent_dir = if (zig_0_12) parent.dir else parent.iterable_dir.dir;
-    const parent_iterable_dir = if (zig_0_12) parent.dir else parent.iterable_dir;
 
     var workers: [NumWorkers]std.Thread = undefined;
     for (0..NumWorkers) |worker_idx| {
         // This will leak on error, but that's fine for a test.
-        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent_dir });
+        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent.dir });
     }
 
     for (0..NumWorkers) |i| workers[i].join();
 
     // Verify that everything was cleaned up after the workers exit.
-    var it = parent_iterable_dir.iterate();
+    var it = parent.dir.iterate();
     var failed = false;
     while (try it.next()) |ent| {
         std.log.err("unexpected child: {s}\n", .{ent.name});
@@ -448,26 +438,19 @@ test "TempFile multiple threads" {
 
     const alloc = std.testing.allocator;
 
-    // HACK: Zig 0.11 support.
-    const zig_0_12 = @hasField(OpenDirOptions, "iterate");
-    var parent = if (zig_0_12)
-        std.testing.tmpDir(.{ .iterate = true }) // Zig 0.12
-    else
-        std.testing.tmpIterableDir(.{}); // Zig 0.11
+    var parent = std.testing.tmpDir(.{ .iterate = true });
     defer parent.cleanup();
-    const parent_dir = if (zig_0_12) parent.dir else parent.iterable_dir.dir;
-    const parent_iterable_dir = if (zig_0_12) parent.dir else parent.iterable_dir;
 
     var workers: [NumWorkers]std.Thread = undefined;
     for (0..NumWorkers) |worker_idx| {
         // This will leak on error, but that's fine for a test.
-        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent_dir });
+        workers[worker_idx] = try std.Thread.spawn(.{}, Worker.run, .{ alloc, parent.dir });
     }
 
     for (0..NumWorkers) |i| workers[i].join();
 
     // Verify that everything was cleaned up after the workers exit.
-    var it = parent_iterable_dir.iterate();
+    var it = parent.dir.iterate();
     var failed = false;
     while (try it.next()) |ent| {
         std.log.err("unexpected child: {s}\n", .{ent.name});
@@ -511,7 +494,7 @@ const NameGenerator = struct {
     suffix: []const u8,
 
     /// Buffer for the generated name. Reused across calls to `next`.
-    basename: ArrayList(u8),
+    basename: std.ArrayList(u8),
 
     attempt: usize,
     limit: usize,
@@ -529,7 +512,7 @@ const NameGenerator = struct {
             suffix = "";
         }
 
-        const basename = try ArrayList(u8).initCapacity(alloc, prefix.len + suffix.len + random_basename_len);
+        const basename = try std.ArrayList(u8).initCapacity(alloc, prefix.len + suffix.len + random_basename_len);
         return NameGenerator{
             .allocator = alloc,
             .prefix = prefix,
@@ -806,7 +789,7 @@ const utf16le = struct {
     ///
     /// Assumes valid UTF-16LE, crashing if it encounters invalid unicode.
     fn to_utf8_alloc(alloc: Allocator, utf16le_slice: []const u16) ![]const u8 {
-        var result = try ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
+        var result = try std.ArrayList(u8).initCapacity(alloc, utf16le_slice.len);
         errdefer result.deinit(alloc);
 
         var end_index: usize = 0;
