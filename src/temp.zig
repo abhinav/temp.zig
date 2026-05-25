@@ -604,10 +604,11 @@ pub const SystemDirError = std.Io.File.OpenError || OSError;
 /// to avoid leaking resources.
 pub fn system_dir(io: std.Io) SystemDirError!std.Io.Dir {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = system_dir_path(buf[0..]) catch |err| switch (err) {
-        error.NameTooLong => unreachable, // violates MAX_PATH_BYTES
-        else => return err,
+    const n :usize = system_dir_path(buf[0..]) catch |err| {
+        if (err == error.NameTooLong) unreachable;
+        return err;
     };
+
     return std.Io.Dir.openDirAbsolute(io, buf[0..n], .{});
 }
 
