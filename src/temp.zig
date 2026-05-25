@@ -39,8 +39,7 @@
 //! # Global temporary directory
 //!
 //! The `system_dir` function identifies the system-level global temporary directory.
-//! On Unix-like systems, this is the `$TMPDIR` environment variable
-//! or `/tmp` if `$TMPDIR` is not set.
+//! On Unix-like systems, this is the `/tmp` .
 //! On Windows, this comes from the `GetTempPathW` API,
 //! which uses the `%TMP%`, `%TEMP%`, and `%USERPROFILE%` environment variables,
 //! or the Windows directory if none of those are set.
@@ -636,7 +635,7 @@ pub fn system_dir_path(buf: []u8) SystemDirPathError!usize {
 }
 
 fn system_dir_path_unix(buf: []u8) error{NameTooLong}!usize {
-    const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const dir = "/tmp";
     const dir_len = dir.len;
     if (dir_len > buf.len) {
         return error.NameTooLong;
@@ -669,7 +668,7 @@ pub fn system_dir_path_alloc(alloc: Allocator) SystemDirPathAllocError![]const u
 }
 
 fn system_dir_path_alloc_unix(alloc: Allocator) ![]const u8 {
-    const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const dir = "/tmp";
     return alloc.dupe(u8, dir);
 }
 
