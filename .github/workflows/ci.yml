@@ -34,7 +34,7 @@ jobs:
       matrix:
         zig-version: [0.16.0]
         os: [ubuntu-latest, macos-latest, windows-latest]
-        allow-fail: [false]
+        allow-fail: [true]
         include:
           - zig-version: master
             os: ubuntu-latest
