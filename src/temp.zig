@@ -9,14 +9,14 @@
 //! and delete the temporary artifact.
 //!
 //! ```
-//! var tmp_dir = try TempDir.create(allocator, {});
+//! var tmp_dir = try TempDir.create(allocator, io, {});
 //! defer tmp_dir.deinit();
 //! ```
 //!
 //! Use the `pattern` option to change the name of the temporary resource.
 //!
 //! ```
-//! var tmp_file = try TempFile.create(allocator, .{
+//! var tmp_file = try TempFile.create(allocator, io, .{
 //!    .pattern = "foo-*.txt",
 //! });
 //! defer tmp_file.deinit();
@@ -29,10 +29,10 @@
 //! Be sure to close the handle when you're done with it.
 //!
 //! ```
-//! var dir = try tmp_dir.open(.{});
+//! var dir = try tmp_dir.open(io, .{});
 //! defer dir.close();
 //!
-//! const file = try tmp_file.open(.{ .mode = .read_write });
+//! const file = try tmp_file.open(io, .{ .mode = .read_write });
 //! defer file.close();
 //! ```
 //!
