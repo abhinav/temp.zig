@@ -9,8 +9,10 @@
 //! and delete the temporary artifact.
 //!
 //! ```
+//! var threaded: std.Io.Threaded = .init_single_threaded;
+//! const io = threaded.io();
 //! var tmp_dir = try TempDir.create(allocator, io, {});
-//! defer tmp_dir.deinit();
+//! defer tmp_dir.deinit(io);
 //! ```
 //!
 //! Use the `pattern` option to change the name of the temporary resource.
@@ -19,7 +21,7 @@
 //! var tmp_file = try TempFile.create(allocator, io, .{
 //!    .pattern = "foo-*.txt",
 //! });
-//! defer tmp_file.deinit();
+//! defer tmp_file.deinit(io);
 //! ```
 //!
 //! See `TempDir.CreateOptions` and `TempFile.CreateOptions`
@@ -30,16 +32,26 @@
 //!
 //! ```
 //! var dir = try tmp_dir.open(io, .{});
-//! defer dir.close();
+//! defer dir.close(io);
 //!
 //! const file = try tmp_file.open(io, .{ .mode = .read_write });
-//! defer file.close();
+//! defer file.close(io);
 //! ```
 //!
 //! # Global temporary directory
 //!
 //! The `system_dir` function identifies the system-level global temporary directory.
-//! On Unix-like systems, this is the `/tmp` .
+//! On Unix-like systems, this is the `$TMPDIR` environment variable
+//! if an environment is provided,
+//! or `/tmp` if `$TMPDIR` is not available.
+//!
+//! ```
+//! var tmp_dir = try TempDir.create(allocator, io, .{
+//!     .environ = init.minimal.environ,
+//! });
+//! defer tmp_dir.deinit(io);
+//! ```
+//!
 //! On Windows, this comes from the `GetTempPathW` API,
 //! which uses the `%TMP%`, `%TEMP%`, and `%USERPROFILE%` environment variables,
 //! or the Windows directory if none of those are set.
@@ -72,6 +84,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const Environ = std.process.Environ;
 const temp = @This();
 
 // OS-specific errors.
@@ -82,7 +95,7 @@ const is_unix = blk: {
     if (tag.isDarwin() or tag.isBSD()) break :blk true;
 
     break :blk switch (tag) {
-        .hurd, .linux, .plan9 => true,
+        .hurd, .illumos, .linux, .plan9 => true,
         else => false,
     };
 };
@@ -107,6 +120,10 @@ pub const TempDir = struct {
         /// If null, the system-level global temporary directory is used.
         /// See `system_dir`.
         parent: ?std.Io.Dir = null,
+
+        /// Environment used to resolve the system-level global temporary directory.
+        /// Only used if `parent` is null.
+        environ: ?Environ = null,
 
         /// Pattern for the directory name.
         /// The last `*` in the pattern is replaced with a random string.
@@ -139,7 +156,7 @@ pub const TempDir = struct {
     pub fn create(alloc: Allocator, io: std.Io, opts: CreateOptions) CreateError!TempDir {
         assert(std.mem.indexOf(u8, opts.pattern, std.Io.Dir.path.sep_str) == null); // must not contain path separator
 
-        var parent_dir = opts.parent orelse try system_dir(io);
+        var parent_dir = opts.parent orelse try system_dir(io, opts.environ);
         const should_close_parent = opts.parent == null;
         errdefer if (should_close_parent) parent_dir.close(io); // we own parent_dir
 
@@ -289,6 +306,10 @@ pub const TempFile = struct {
         /// See `system_dir`.
         parent: ?std.Io.Dir = null,
 
+        /// Environment used to resolve the system-level global temporary directory.
+        /// Only used if `parent` is null.
+        environ: ?Environ = null,
+
         /// Pattern for the directory name.
         /// The last `*` in the pattern is replaced with a random string.
         /// If the pattern does not contain a `*`, one is appended.
@@ -316,7 +337,7 @@ pub const TempFile = struct {
     pub fn create(alloc: Allocator, io: std.Io, opts: CreateOptions) CreateError!TempFile {
         assert(std.mem.indexOf(u8, opts.pattern, std.Io.Dir.path.sep_str) == null); // must not contain path separator
 
-        var parent_dir = opts.parent orelse try system_dir(io);
+        var parent_dir = opts.parent orelse try system_dir(io, opts.environ);
         const should_close_parent = opts.parent == null;
         errdefer if (should_close_parent) parent_dir.close(io); // we own parent_dir
 
@@ -602,9 +623,9 @@ pub const SystemDirError = std.Io.File.OpenError || OSError;
 /// Returns a directory handle to the system-level global temporary directory.
 /// The returned handle is a system resource and must be closed
 /// to avoid leaking resources.
-pub fn system_dir(io: std.Io) SystemDirError!std.Io.Dir {
+pub fn system_dir(io: std.Io, environ: ?Environ) SystemDirError!std.Io.Dir {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n: usize = system_dir_path(buf[0..]) catch |err| {
+    const n: usize = system_dir_path(buf[0..], environ) catch |err| {
         if (err == error.NameTooLong) unreachable;
         return err;
     };
@@ -613,7 +634,7 @@ pub fn system_dir(io: std.Io) SystemDirError!std.Io.Dir {
 }
 
 test system_dir {
-    var dir = try system_dir(std.testing.io);
+    var dir = try system_dir(std.testing.io, null);
     defer dir.close(std.testing.io);
 }
 
@@ -622,12 +643,13 @@ pub const SystemDirPathError = error{NameTooLong} || OSError;
 /// Writes the system-level global temporary directory to `buf`,
 /// returning the length of the written string.
 /// Returns error.NameTooLong if the path is longer than `buf.len`.
+/// On Unix-like systems, `environ` is used to read `$TMPDIR`.
 ///
 /// Typically, applications will want to create their own temporary directory
 /// within this directory.
-pub fn system_dir_path(buf: []u8) SystemDirPathError!usize {
+pub fn system_dir_path(buf: []u8, environ: ?Environ) SystemDirPathError!usize {
     if (is_unix) {
-        return system_dir_path_unix(buf);
+        return system_dir_path_unix(buf, environ);
     } else if (builtin.os.tag == .windows) {
         return windows.get_temp_path(buf);
     } else {
@@ -635,8 +657,8 @@ pub fn system_dir_path(buf: []u8) SystemDirPathError!usize {
     }
 }
 
-fn system_dir_path_unix(buf: []u8) error{NameTooLong}!usize {
-    const dir = "/tmp";
+fn system_dir_path_unix(buf: []u8, environ: ?Environ) error{NameTooLong}!usize {
+    const dir = if (environ) |env| env.getPosix("TMPDIR") orelse "/tmp" else "/tmp";
     const dir_len = dir.len;
     if (dir_len > buf.len) {
         return error.NameTooLong;
@@ -648,19 +670,37 @@ fn system_dir_path_unix(buf: []u8) error{NameTooLong}!usize {
 
 test system_dir_path {
     var buf: [1024]u8 = undefined;
-    const n = try system_dir_path(buf[0..]);
+    const n = try system_dir_path(buf[0..], null);
 
     const path = buf[0..n];
     try std.testing.expect(path.len > 0); // must be non-empty
+}
+
+test "system_dir_path uses TMPDIR from environ" {
+    if (comptime !is_unix) return;
+
+    const alloc = std.testing.allocator;
+
+    var map: Environ.Map = .init(alloc);
+    defer map.deinit();
+    try map.put("TMPDIR", "/tmp/temp-zig-test");
+
+    const environ: Environ = .{ .block = try map.createPosixBlock(alloc, .{}) };
+    defer environ.block.deinit(alloc);
+
+    var buf: [1024]u8 = undefined;
+    const n = try system_dir_path(buf[0..], environ);
+
+    try std.testing.expectEqualStrings("/tmp/temp-zig-test", buf[0..n]);
 }
 
 pub const SystemDirPathAllocError = Allocator.Error || OSError;
 
 /// Variant of `system_dir_path` that allocates a buffer.
 /// The caller is responsible for freeing the buffer.
-pub fn system_dir_path_alloc(alloc: Allocator) SystemDirPathAllocError![]const u8 {
+pub fn system_dir_path_alloc(alloc: Allocator, environ: ?Environ) SystemDirPathAllocError![]const u8 {
     if (is_unix) {
-        return system_dir_path_alloc_unix(alloc);
+        return system_dir_path_alloc_unix(alloc, environ);
     } else if (builtin.os.tag == .windows) {
         return windows.get_temp_path_alloc(alloc);
     } else {
@@ -668,20 +708,20 @@ pub fn system_dir_path_alloc(alloc: Allocator) SystemDirPathAllocError![]const u
     }
 }
 
-fn system_dir_path_alloc_unix(alloc: Allocator) ![]const u8 {
-    const dir = "/tmp";
+fn system_dir_path_alloc_unix(alloc: Allocator, environ: ?Environ) ![]const u8 {
+    const dir = if (environ) |env| env.getPosix("TMPDIR") orelse "/tmp" else "/tmp";
     return alloc.dupe(u8, dir);
 }
 
 test system_dir_path_alloc {
     const alloc = std.testing.allocator;
 
-    const path = try system_dir_path_alloc(alloc);
+    const path = try system_dir_path_alloc(alloc, null);
     defer alloc.free(path);
     try std.testing.expect(path.len > 0); // must be non-empty
 
     // Calling again should return the same path.
-    const path2 = try system_dir_path_alloc(alloc);
+    const path2 = try system_dir_path_alloc(alloc, null);
     defer alloc.free(path2);
     try std.testing.expectEqualStrings(path, path2);
 }
