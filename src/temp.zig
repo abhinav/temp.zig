@@ -9,17 +9,19 @@
 //! and delete the temporary artifact.
 //!
 //! ```
-//! var tmp_dir = try TempDir.create(allocator, {});
-//! defer tmp_dir.deinit();
+//! var threaded: std.Io.Threaded = .init_single_threaded;
+//! const io = threaded.io();
+//! var tmp_dir = try TempDir.create(allocator, io, {});
+//! defer tmp_dir.deinit(io);
 //! ```
 //!
 //! Use the `pattern` option to change the name of the temporary resource.
 //!
 //! ```
-//! var tmp_file = try TempFile.create(allocator, .{
+//! var tmp_file = try TempFile.create(allocator, io, .{
 //!    .pattern = "foo-*.txt",
 //! });
-//! defer tmp_file.deinit();
+//! defer tmp_file.deinit(io);
 //! ```
 //!
 //! See `TempDir.CreateOptions` and `TempFile.CreateOptions`
@@ -29,18 +31,27 @@
 //! Be sure to close the handle when you're done with it.
 //!
 //! ```
-//! var dir = try tmp_dir.open(.{});
-//! defer dir.close();
+//! var dir = try tmp_dir.open(io, .{});
+//! defer dir.close(io);
 //!
-//! const file = try tmp_file.open(.{ .mode = .read_write });
-//! defer file.close();
+//! const file = try tmp_file.open(io, .{ .mode = .read_write });
+//! defer file.close(io);
 //! ```
 //!
 //! # Global temporary directory
 //!
 //! The `system_dir` function identifies the system-level global temporary directory.
 //! On Unix-like systems, this is the `$TMPDIR` environment variable
-//! or `/tmp` if `$TMPDIR` is not set.
+//! if an environment is provided,
+//! or `/tmp` if `$TMPDIR` is not available.
+//!
+//! ```
+//! var tmp_dir = try TempDir.create(allocator, io, .{
+//!     .environ = init.minimal.environ,
+//! });
+//! defer tmp_dir.deinit(io);
+//! ```
+//!
 //! On Windows, this comes from the `GetTempPathW` API,
 //! which uses the `%TMP%`, `%TEMP%`, and `%USERPROFILE%` environment variables,
 //! or the Windows directory if none of those are set.
@@ -73,6 +84,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const Environ = std.process.Environ;
 const temp = @This();
 
 // OS-specific errors.
@@ -83,7 +95,7 @@ const is_unix = blk: {
     if (tag.isDarwin() or tag.isBSD()) break :blk true;
 
     break :blk switch (tag) {
-        .aix, .hurd, .linux, .plan9, .solaris => true,
+        .hurd, .illumos, .linux, .plan9 => true,
         else => false,
     };
 };
@@ -94,7 +106,7 @@ pub const TempDir = struct {
     allocator: Allocator,
 
     /// Parent directory of the temporary directory.
-    parent_dir: std.fs.Dir,
+    parent_dir: std.Io.Dir,
     should_close_parent: bool,
 
     /// Basename of the temporary directory inside `parent_dir`.
@@ -107,7 +119,11 @@ pub const TempDir = struct {
         /// Parent directory to create the temporary directory in.
         /// If null, the system-level global temporary directory is used.
         /// See `system_dir`.
-        parent: ?std.fs.Dir = null,
+        parent: ?std.Io.Dir = null,
+
+        /// Environment used to resolve the system-level global temporary directory.
+        /// Only used if `parent` is null.
+        environ: ?Environ = null,
 
         /// Pattern for the directory name.
         /// The last `*` in the pattern is replaced with a random string.
@@ -125,7 +141,7 @@ pub const TempDir = struct {
         /// This is a rare error that can occur if the system is under heavy load.
         /// Consider using a different pattern, or use a different parent directory.
         PathAlreadyExists,
-    } || Allocator.Error || std.fs.File.OpenError || std.posix.MakeDirError || OSError;
+    } || Allocator.Error || std.Io.File.OpenError || std.Io.Dir.CreateDirError || OSError;
 
     /// Creates a unique new directory,
     /// guaranteeing that the directory did not exist before the call.
@@ -137,18 +153,18 @@ pub const TempDir = struct {
     ///
     /// Returns `CreateError.PathAlreadyExists` if a unique name could not be
     /// found after several attempts.
-    pub fn create(alloc: Allocator, opts: CreateOptions) CreateError!TempDir {
-        assert(std.mem.indexOf(u8, opts.pattern, std.fs.path.sep_str) == null); // must not contain path separator
+    pub fn create(alloc: Allocator, io: std.Io, opts: CreateOptions) CreateError!TempDir {
+        assert(std.mem.indexOf(u8, opts.pattern, std.Io.Dir.path.sep_str) == null); // must not contain path separator
 
-        var parent_dir = opts.parent orelse try system_dir();
+        var parent_dir = opts.parent orelse try system_dir(io, opts.environ);
         const should_close_parent = opts.parent == null;
-        errdefer if (should_close_parent) parent_dir.close(); // we own parent_dir
+        errdefer if (should_close_parent) parent_dir.close(io); // we own parent_dir
 
         var it = try NameGenerator.init(alloc, opts.pattern, 1000);
         defer it.deinit();
 
-        while (try it.next()) |basename| {
-            parent_dir.makeDir(basename) catch |err| {
+        while (try it.next(io)) |basename| {
+            parent_dir.createDir(io, basename, .default_dir) catch |err| {
                 if (err == error.PathAlreadyExists) {
                     // Try again with a different random string.
                     continue;
@@ -170,18 +186,18 @@ pub const TempDir = struct {
 
     /// Returns a handle to the temporary directory.
     /// The handle is a system resource and must be closed by the caller.
-    pub fn open(self: *const TempDir, opts: std.fs.Dir.OpenOptions) std.fs.Dir.OpenError!std.fs.Dir {
-        return self.parent_dir.openDir(self.basename, opts);
+    pub fn open(self: *const TempDir, io: std.Io, opts: std.Io.Dir.OpenOptions) std.Io.Dir.OpenError!std.Io.Dir {
+        return self.parent_dir.openDir(io, self.basename, opts);
     }
 
     /// Frees up resources held by the TempDir.
     /// Deletes the temporary directory unless `retain` is true.
-    pub fn deinit(self: *TempDir) void {
+    pub fn deinit(self: *TempDir, io: std.Io) void {
         if (!self.retain) {
-            self.parent_dir.deleteTree(self.basename) catch {};
+            self.parent_dir.deleteTree(io, self.basename) catch {};
         }
         if (self.should_close_parent) {
-            self.parent_dir.close();
+            self.parent_dir.close(io);
         }
         self.allocator.free(self.basename);
     }
@@ -190,16 +206,16 @@ pub const TempDir = struct {
 test TempDir {
     const alloc = std.testing.allocator;
 
-    var tmp_dir = try TempDir.create(alloc, .{
+    var tmp_dir = try TempDir.create(alloc, std.testing.io, .{
         .pattern = "test-data-*",
     });
-    defer tmp_dir.deinit();
+    defer tmp_dir.deinit(std.testing.io);
 
-    var dir = try tmp_dir.open(.{});
-    defer dir.close();
+    var dir = try tmp_dir.open(std.testing.io, .{});
+    defer dir.close(std.testing.io);
 
-    const f = try dir.createFile("foo.txt", .{});
-    f.close();
+    const f = try dir.createFile(std.testing.io, "foo.txt", .{});
+    f.close(std.testing.io);
 }
 
 /// Create a new temporary directory in the system's global temporary directory.
@@ -209,21 +225,21 @@ test TempDir {
 /// The last `*` in the pattern is replaced with a random string.
 ///
 /// For additional options, use `TempDir.create`.
-pub fn create_dir(alloc: Allocator, pattern: []const u8) !TempDir {
-    return try TempDir.create(alloc, .{ .pattern = pattern });
+pub fn create_dir(alloc: Allocator, io: std.Io, pattern: []const u8) !TempDir {
+    return try TempDir.create(alloc, io, .{ .pattern = pattern });
 }
 
 test create_dir {
     const alloc = std.testing.allocator;
 
-    var tmp_dir = try temp.create_dir(alloc, "test-data-*");
-    defer tmp_dir.deinit();
+    var tmp_dir = try temp.create_dir(alloc, std.testing.io, "test-data-*");
+    defer tmp_dir.deinit(std.testing.io);
 
-    var dir = try tmp_dir.open(.{});
-    defer dir.close();
+    var dir = try tmp_dir.open(std.testing.io, .{});
+    defer dir.close(std.testing.io);
 
-    const f = try dir.createFile("foo.txt", .{});
-    f.close();
+    const f = try dir.createFile(std.testing.io, "foo.txt", .{});
+    f.close(std.testing.io);
 }
 
 test "TempDir multiple threads" {
@@ -235,13 +251,13 @@ test "TempDir multiple threads" {
     const NumWorkers = 10;
 
     const Worker = struct {
-        fn run(alloc: Allocator, parent: std.fs.Dir) !void {
+        fn run(alloc: Allocator, parent: std.Io.Dir) !void {
             for (0..NumIterations) |_| {
-                var tmp_dir = try TempDir.create(alloc, .{
+                var tmp_dir = try TempDir.create(alloc, std.testing.io, .{
                     .parent = parent,
                     .pattern = "foo*",
                 });
-                tmp_dir.deinit();
+                tmp_dir.deinit(std.testing.io);
             }
         }
     };
@@ -262,7 +278,7 @@ test "TempDir multiple threads" {
     // Verify that everything was cleaned up after the workers exit.
     var it = parent.dir.iterate();
     var failed = false;
-    while (try it.next()) |ent| {
+    while (try it.next(std.testing.io)) |ent| {
         std.log.err("unexpected child: {s}\n", .{ent.name});
         failed = true;
     }
@@ -275,7 +291,7 @@ pub const TempFile = struct {
     allocator: Allocator,
 
     /// Parent directory of the temporary file.
-    parent_dir: std.fs.Dir,
+    parent_dir: std.Io.Dir,
     should_close_parent: bool,
 
     /// Basename of the temporary file inside `parent_dir`.
@@ -288,7 +304,11 @@ pub const TempFile = struct {
         /// Parent directory to create the temporary directory in.
         /// If null, the system-level global temporary directory is used.
         /// See `system_dir`.
-        parent: ?std.fs.Dir = null,
+        parent: ?std.Io.Dir = null,
+
+        /// Environment used to resolve the system-level global temporary directory.
+        /// Only used if `parent` is null.
+        environ: ?Environ = null,
 
         /// Pattern for the directory name.
         /// The last `*` in the pattern is replaced with a random string.
@@ -302,7 +322,7 @@ pub const TempFile = struct {
     };
 
     pub const CreateError = error{PathAlreadyExists} ||
-        Allocator.Error || std.fs.File.OpenError || OSError;
+        Allocator.Error || std.Io.File.OpenError || OSError;
 
     /// Creates a unique new file in read-write mode,
     /// guaranteeing that the file did not exist before the call.
@@ -314,18 +334,18 @@ pub const TempFile = struct {
     ///
     /// Returns error.PathAlreadyExists if a unique name could not be found
     /// after several attempts.
-    pub fn create(alloc: Allocator, opts: CreateOptions) CreateError!TempFile {
-        assert(std.mem.indexOf(u8, opts.pattern, std.fs.path.sep_str) == null); // must not contain path separator
+    pub fn create(alloc: Allocator, io: std.Io, opts: CreateOptions) CreateError!TempFile {
+        assert(std.mem.indexOf(u8, opts.pattern, std.Io.Dir.path.sep_str) == null); // must not contain path separator
 
-        var parent_dir = opts.parent orelse try system_dir();
+        var parent_dir = opts.parent orelse try system_dir(io, opts.environ);
         const should_close_parent = opts.parent == null;
-        errdefer if (should_close_parent) parent_dir.close(); // we own parent_dir
+        errdefer if (should_close_parent) parent_dir.close(io); // we own parent_dir
 
         var it = try NameGenerator.init(alloc, opts.pattern, 1000);
         defer it.deinit();
 
-        while (try it.next()) |basename| {
-            const file = parent_dir.createFile(basename, .{
+        while (try it.next(io)) |basename| {
+            const file = parent_dir.createFile(io, basename, .{
                 .exclusive = true,
             }) catch |err| {
                 if (err == error.PathAlreadyExists) {
@@ -334,7 +354,7 @@ pub const TempFile = struct {
                 }
                 return err;
             };
-            file.close();
+            file.close(io);
 
             return TempFile{
                 .retain = opts.retain,
@@ -350,18 +370,18 @@ pub const TempFile = struct {
 
     /// Returns a handle to the temporary file.
     /// The handle is a system resource and must be closed by the caller.
-    pub fn open(self: *const TempFile, opts: std.fs.File.OpenFlags) std.fs.File.OpenError!std.fs.File {
-        return self.parent_dir.openFile(self.basename, opts);
+    pub fn open(self: *const TempFile, io: std.Io, opts: std.Io.File.OpenFlags) std.Io.File.OpenError!std.Io.File {
+        return self.parent_dir.openFile(io, self.basename, opts);
     }
 
     /// Frees up resources held by the TempFile.
     /// Deletes the temporary file unless `retain` is true.
-    pub fn deinit(self: *TempFile) void {
+    pub fn deinit(self: *TempFile, io: std.Io) void {
         if (!self.retain) {
-            self.parent_dir.deleteFile(self.basename) catch {};
+            self.parent_dir.deleteFile(io, self.basename) catch {};
         }
         if (self.should_close_parent) {
-            self.parent_dir.close();
+            self.parent_dir.close(io);
         }
         self.allocator.free(self.basename);
     }
@@ -370,22 +390,22 @@ pub const TempFile = struct {
 test TempFile {
     const alloc = std.testing.allocator;
 
-    var tmp_file: TempFile = try TempFile.create(alloc, .{
+    var tmp_file: TempFile = try TempFile.create(alloc, std.testing.io, .{
         .pattern = "data*.txt",
     });
-    defer tmp_file.deinit();
+    defer tmp_file.deinit(std.testing.io);
 
     var buf: [1024]u8 = undefined;
 
-    var f: std.fs.File = try tmp_file.open(.{ .mode = .read_write });
-    defer f.close();
+    var f: std.Io.File = try tmp_file.open(std.testing.io, .{ .mode = .read_write });
+    defer f.close(std.testing.io);
 
-    var writer = f.writer(&buf);
+    var writer = f.writer(std.testing.io, &buf);
     var w = &writer.interface;
     try w.writeAll("hello\nworld\n");
     try w.flush();
 
-    var reader = f.reader(&buf);
+    var reader = f.reader(std.testing.io, &buf);
     var r = &reader.interface;
 
     const got = try r.allocRemaining(alloc, .unlimited);
@@ -401,19 +421,19 @@ test TempFile {
 /// The last `*` in the pattern is replaced with a random string.
 ///
 /// For additional options, use `TempFile.create`.
-pub fn create_file(alloc: Allocator, pattern: []const u8) !TempFile {
-    return try TempFile.create(alloc, .{ .pattern = pattern });
+pub fn create_file(alloc: Allocator, io: std.Io, pattern: []const u8) !TempFile {
+    return try TempFile.create(alloc, io, .{ .pattern = pattern });
 }
 
 test create_file {
     const alloc = std.testing.allocator;
 
-    var tmp_file = try temp.create_file(alloc, "data*.txt");
-    defer tmp_file.deinit();
+    var tmp_file = try temp.create_file(alloc, std.testing.io, "data*.txt");
+    defer tmp_file.deinit(std.testing.io);
 
-    const f = try tmp_file.open(.{ .mode = .read_write });
-    try f.writeAll("hello\nworld\n");
-    f.close();
+    const f = try tmp_file.open(std.testing.io, .{ .mode = .read_write });
+    try f.writeStreamingAll(std.testing.io, "hello\nworld\n");
+    f.close(std.testing.io);
 }
 
 test "TempFile multiple threads" {
@@ -425,13 +445,13 @@ test "TempFile multiple threads" {
     const NumWorkers = 10;
 
     const Worker = struct {
-        fn run(alloc: Allocator, parent: std.fs.Dir) !void {
+        fn run(alloc: Allocator, parent: std.Io.Dir) !void {
             for (0..NumIterations) |_| {
-                var tmp_file = try TempFile.create(alloc, .{
+                var tmp_file = try TempFile.create(alloc, std.testing.io, .{
                     .parent = parent,
                     .pattern = "foo*.txt",
                 });
-                tmp_file.deinit();
+                tmp_file.deinit(std.testing.io);
             }
         }
     };
@@ -452,7 +472,7 @@ test "TempFile multiple threads" {
     // Verify that everything was cleaned up after the workers exit.
     var it = parent.dir.iterate();
     var failed = false;
-    while (try it.next()) |ent| {
+    while (try it.next(std.testing.io)) |ent| {
         std.log.err("unexpected child: {s}\n", .{ent.name});
         failed = true;
     }
@@ -462,28 +482,28 @@ test "TempFile multiple threads" {
 test "TempFile close without deleting" {
     const alloc = std.testing.allocator;
 
-    var tmp_dir = try TempDir.create(alloc, .{});
-    defer tmp_dir.deinit();
+    var tmp_dir = try TempDir.create(alloc, std.testing.io, .{});
+    defer tmp_dir.deinit(std.testing.io);
 
-    var parent = try tmp_dir.open(.{});
-    defer parent.close();
+    var parent = try tmp_dir.open(std.testing.io, .{});
+    defer parent.close(std.testing.io);
 
-    var tmp_file = try TempFile.create(alloc, .{ .parent = parent });
-    defer tmp_file.deinit();
+    var tmp_file = try TempFile.create(alloc, std.testing.io, .{ .parent = parent });
+    defer tmp_file.deinit(std.testing.io);
 
-    const f = try tmp_file.open(.{ .mode = .read_write });
-    errdefer f.close();
-    try f.writeAll("hello\n");
-    f.close();
+    const f = try tmp_file.open(std.testing.io, .{ .mode = .read_write });
+    errdefer f.close(std.testing.io);
+    try f.writeStreamingAll(std.testing.io, "hello\n");
+    f.close(std.testing.io);
 
-    _ = try parent.statFile(tmp_file.basename); // file should exist
+    _ = try parent.statFile(std.testing.io, tmp_file.basename, .{}); // file should exist
 }
 
 /// Generates random names matching a pattern until a limit is reached.
 const NameGenerator = struct {
     // TODO: Use random integer instead of fixed-width bytes.
     const random_bytes_count = 8;
-    const random_basename_len = std.fs.base64_encoder.calcSize(random_bytes_count);
+    const random_basename_len = std.base64.url_safe.Encoder.calcSize(random_bytes_count);
 
     allocator: Allocator,
 
@@ -531,16 +551,16 @@ const NameGenerator = struct {
     /// The slice is re-used across calls to `next`, so copy it if you need to keep it.
     ///
     /// Returns null if the limit is reached.
-    fn next(self: *NameGenerator) !?[]const u8 {
+    fn next(self: *NameGenerator, io: std.Io) !?[]const u8 {
         if (self.attempt >= self.limit) {
             return null;
         }
         defer self.attempt += 1;
 
         var random_bytes: [random_bytes_count]u8 = undefined;
-        std.crypto.random.bytes(&random_bytes);
+        io.random(&random_bytes);
         var rand_buffer: [random_basename_len]u8 = undefined;
-        const rand_part = std.fs.base64_encoder.encode(&rand_buffer, random_bytes[0..]);
+        const rand_part = std.base64.url_safe.Encoder.encode(&rand_buffer, random_bytes[0..]);
 
         self.basename.clearRetainingCapacity();
         try self.basename.appendSlice(self.allocator, self.prefix);
@@ -556,7 +576,7 @@ const NameGenerator = struct {
         defer it.deinit();
 
         for (0..10) |_| {
-            const name = try it.next();
+            const name = try it.next(std.testing.io);
             try std.testing.expect(name != null);
         }
     }
@@ -567,7 +587,7 @@ const NameGenerator = struct {
         defer it.deinit();
 
         for (0..10) |_| {
-            const name = try it.next() orelse @panic("expected name");
+            const name = try it.next(std.testing.io) orelse @panic("expected name");
             errdefer std.debug.print("got: {s}\n", .{name});
 
             try std.testing.expectStringStartsWith(name, "foo");
@@ -580,7 +600,7 @@ const NameGenerator = struct {
         defer it.deinit();
 
         for (0..10) |_| {
-            const name = try it.next() orelse @panic("expected name");
+            const name = try it.next(std.testing.io) orelse @panic("expected name");
             errdefer std.debug.print("got: {s}\n", .{name});
 
             try std.testing.expectStringStartsWith(name, "foo");
@@ -593,28 +613,29 @@ const NameGenerator = struct {
         var it = try NameGenerator.init(alloc, "foo*", 1);
         defer it.deinit();
 
-        try std.testing.expect(try it.next() != null);
-        try std.testing.expect(try it.next() == null);
+        try std.testing.expect(try it.next(std.testing.io) != null);
+        try std.testing.expect(try it.next(std.testing.io) == null);
     }
 };
 
-pub const SystemDirError = std.fs.File.OpenError || OSError;
+pub const SystemDirError = std.Io.File.OpenError || OSError;
 
 /// Returns a directory handle to the system-level global temporary directory.
 /// The returned handle is a system resource and must be closed
 /// to avoid leaking resources.
-pub fn system_dir() SystemDirError!std.fs.Dir {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = system_dir_path(buf[0..]) catch |err| switch (err) {
-        error.NameTooLong => unreachable, // violates MAX_PATH_BYTES
-        else => return err,
+pub fn system_dir(io: std.Io, environ: ?Environ) SystemDirError!std.Io.Dir {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n: usize = system_dir_path(buf[0..], environ) catch |err| {
+        if (err == error.NameTooLong) unreachable;
+        return err;
     };
-    return std.fs.openDirAbsolute(buf[0..n], .{});
+
+    return std.Io.Dir.openDirAbsolute(io, buf[0..n], .{});
 }
 
 test system_dir {
-    var dir = try system_dir();
-    defer dir.close();
+    var dir = try system_dir(std.testing.io, null);
+    defer dir.close(std.testing.io);
 }
 
 pub const SystemDirPathError = error{NameTooLong} || OSError;
@@ -622,12 +643,13 @@ pub const SystemDirPathError = error{NameTooLong} || OSError;
 /// Writes the system-level global temporary directory to `buf`,
 /// returning the length of the written string.
 /// Returns error.NameTooLong if the path is longer than `buf.len`.
+/// On Unix-like systems, `environ` is used to read `$TMPDIR`.
 ///
 /// Typically, applications will want to create their own temporary directory
 /// within this directory.
-pub fn system_dir_path(buf: []u8) SystemDirPathError!usize {
+pub fn system_dir_path(buf: []u8, environ: ?Environ) SystemDirPathError!usize {
     if (is_unix) {
-        return system_dir_path_unix(buf);
+        return system_dir_path_unix(buf, environ);
     } else if (builtin.os.tag == .windows) {
         return windows.get_temp_path(buf);
     } else {
@@ -635,8 +657,8 @@ pub fn system_dir_path(buf: []u8) SystemDirPathError!usize {
     }
 }
 
-fn system_dir_path_unix(buf: []u8) error{NameTooLong}!usize {
-    const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+fn system_dir_path_unix(buf: []u8, environ: ?Environ) error{NameTooLong}!usize {
+    const dir = if (environ) |env| env.getPosix("TMPDIR") orelse "/tmp" else "/tmp";
     const dir_len = dir.len;
     if (dir_len > buf.len) {
         return error.NameTooLong;
@@ -648,19 +670,37 @@ fn system_dir_path_unix(buf: []u8) error{NameTooLong}!usize {
 
 test system_dir_path {
     var buf: [1024]u8 = undefined;
-    const n = try system_dir_path(buf[0..]);
+    const n = try system_dir_path(buf[0..], null);
 
     const path = buf[0..n];
     try std.testing.expect(path.len > 0); // must be non-empty
+}
+
+test "system_dir_path uses TMPDIR from environ" {
+    if (comptime !is_unix) return;
+
+    const alloc = std.testing.allocator;
+
+    var map: Environ.Map = .init(alloc);
+    defer map.deinit();
+    try map.put("TMPDIR", "/tmp/temp-zig-test");
+
+    const environ: Environ = .{ .block = try map.createPosixBlock(alloc, .{}) };
+    defer environ.block.deinit(alloc);
+
+    var buf: [1024]u8 = undefined;
+    const n = try system_dir_path(buf[0..], environ);
+
+    try std.testing.expectEqualStrings("/tmp/temp-zig-test", buf[0..n]);
 }
 
 pub const SystemDirPathAllocError = Allocator.Error || OSError;
 
 /// Variant of `system_dir_path` that allocates a buffer.
 /// The caller is responsible for freeing the buffer.
-pub fn system_dir_path_alloc(alloc: Allocator) SystemDirPathAllocError![]const u8 {
+pub fn system_dir_path_alloc(alloc: Allocator, environ: ?Environ) SystemDirPathAllocError![]const u8 {
     if (is_unix) {
-        return system_dir_path_alloc_unix(alloc);
+        return system_dir_path_alloc_unix(alloc, environ);
     } else if (builtin.os.tag == .windows) {
         return windows.get_temp_path_alloc(alloc);
     } else {
@@ -668,20 +708,20 @@ pub fn system_dir_path_alloc(alloc: Allocator) SystemDirPathAllocError![]const u
     }
 }
 
-fn system_dir_path_alloc_unix(alloc: Allocator) ![]const u8 {
-    const dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+fn system_dir_path_alloc_unix(alloc: Allocator, environ: ?Environ) ![]const u8 {
+    const dir = if (environ) |env| env.getPosix("TMPDIR") orelse "/tmp" else "/tmp";
     return alloc.dupe(u8, dir);
 }
 
 test system_dir_path_alloc {
     const alloc = std.testing.allocator;
 
-    const path = try system_dir_path_alloc(alloc);
+    const path = try system_dir_path_alloc(alloc, null);
     defer alloc.free(path);
     try std.testing.expect(path.len > 0); // must be non-empty
 
     // Calling again should return the same path.
-    const path2 = try system_dir_path_alloc(alloc);
+    const path2 = try system_dir_path_alloc(alloc, null);
     defer alloc.free(path2);
     try std.testing.expectEqualStrings(path, path2);
 }
@@ -723,7 +763,7 @@ const windows = struct {
             // > If the function fails, the return value is zero.
             // > To get extended error information, call GetLastError.
             // From https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppathw
-            return std.os.windows.unexpectedError(kernel32.GetLastError());
+            return std.os.windows.unexpectedError(std.os.windows.GetLastError());
         }
         return n;
     }
