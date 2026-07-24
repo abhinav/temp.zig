@@ -319,6 +319,8 @@ pub const TempFile = struct {
 
         /// If true, don't delete the directory when the TempDir is closed.
         retain: bool = false,
+
+        permissions: std.Io.File.Permissions = .default_file,
     };
 
     pub const CreateError = error{PathAlreadyExists} ||
@@ -347,6 +349,7 @@ pub const TempFile = struct {
         while (try it.next(io)) |basename| {
             const file = parent_dir.createFile(io, basename, .{
                 .exclusive = true,
+                .permissions = opts.permissions,
             }) catch |err| {
                 if (err == error.PathAlreadyExists) {
                     // Try again with a different random string.
