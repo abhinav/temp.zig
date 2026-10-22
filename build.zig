@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "test-cover-out",
         "Output directory for coverage data",
-    ) orelse b.pathFromRoot("cover");
+    ) orelse b.pathResolve(&.{"cover"});
 
     const temp = b.addModule("temp", .{
         .root_source_file = b.path("src/temp.zig"),
