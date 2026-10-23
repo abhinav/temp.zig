@@ -370,7 +370,7 @@ pub const TempFile = struct {
 
     /// Returns a handle to the temporary file.
     /// The handle is a system resource and must be closed by the caller.
-    pub fn open(self: *const TempFile, io: std.Io, opts: std.Io.File.OpenFlags) std.Io.File.OpenError!std.Io.File {
+    pub fn open(self: *const TempFile, io: std.Io, opts: std.Io.Dir.OpenFileOptions) std.Io.File.OpenError!std.Io.File {
         return self.parent_dir.openFile(io, self.basename, opts);
     }
 
